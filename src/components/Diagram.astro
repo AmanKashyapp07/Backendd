@@ -1,0 +1,127 @@
+---
+interface Props {
+  caption?: string;
+}
+const { caption } = Astro.props;
+---
+<figure class="diagram-figure">
+  <div class="diagram-container">
+    <slot />
+  </div>
+  {caption && <figcaption class="diagram-caption">{caption}</figcaption>}
+</figure>
+
+<script>
+  // Ensure diagrams with hand-drawn SVG coordinates scale without clipped glyphs
+  async function fitDiagrams() {
+    try { await document.fonts.ready; } catch {}
+
+    for (const svg of document.querySelectorAll<SVGSVGElement>('.diagram-container svg')) {
+      const raw = svg.getAttribute('viewBox');
+      if (!raw) continue;
+      const [x, y, w, h] = raw.trim().split(/[\s,]+/).map(Number);
+      if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) continue;
+
+      let box;
+      try { box = svg.getBBox(); } catch { continue; }
+      if (!box || !box.width || !box.height) continue;
+
+      const nx = Math.min(x, Math.floor(box.x));
+      const ny = Math.min(y, Math.floor(box.y));
+      const nw = Math.max(x + w, Math.ceil(box.x + box.width)) - nx;
+      const nh = Math.max(y + h, Math.ceil(box.y + box.height)) - ny;
+
+      if (nw - w < 4 && nh - h < 4 && x - nx < 4 && y - ny < 4) continue;
+      svg.setAttribute('viewBox', `${nx} ${ny} ${nw} ${nh}`);
+    }
+  }
+
+  fitDiagrams();
+</script>
+
+<style>
+  .diagram-figure {
+    margin: var(--space-6) 0;
+    width: 100%;
+    /* Dark palette diagram tokens */
+    --dg-paper: #12141a;
+    --dg-surface: #181b23;
+    --dg-surface-2: #222631;
+    --dg-line: #646c7d;
+    --dg-line-2: #8b94a5;
+
+    --dg-ink: #f0f2f5;
+    --dg-ink-2: #cbd5e1;
+    --dg-ink-3: #94a3b8;
+
+    --dg-accent: #60a5fa;
+    --dg-accent-2: #93c5fd;
+    --dg-accent-soft: #3b82f6;
+    --dg-accent-surface: #172554;
+    --dg-accent-border: #3b82f6;
+
+    --dg-ok: #4ade80;
+    --dg-ok-soft: #22c55e;
+    --dg-ok-surface: #143322;
+    --dg-ok-border: #22c55e;
+
+    --dg-warn: #fbbf24;
+    --dg-warn-2: #f59e0b;
+    --dg-warn-soft: #d97706;
+    --dg-warn-surface: #382a14;
+    --dg-warn-border: #f59e0b;
+
+    --dg-info: #38bdf8;
+    --dg-info-soft: #0ea5e9;
+    --dg-info-surface: #0f2d42;
+    --dg-info-border: #0ea5e9;
+
+    --dg-plum: #e879f9;
+    --dg-plum-soft: #d946ef;
+    --dg-plum-surface: #3b1647;
+
+    --dg-inverse: #e6edf3;
+    --dg-on-inverse: #0e1015;
+    --dg-on-inverse-2: #334155;
+    --dg-on-inverse-3: #475569;
+    --dg-on-inverse-accent: #1d4ed8;
+    --dg-on-inverse-ok: #166534;
+    --dg-on-inverse-warn: #92400e;
+    --dg-on-inverse-info: #0369a1;
+
+    --dg-accent-tint: #172554;
+    --dg-ok-tint: #143322;
+    --dg-warn-tint: #382a14;
+    --dg-info-tint: #0f2d42;
+    --dg-plum-tint: #3b1647;
+    --dg-veil: rgba(0, 0, 0, 0.4);
+    --dg-on-accent: #0e1015;
+  }
+
+  .diagram-container {
+    padding: var(--space-5);
+    background: var(--dg-paper);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow-x: auto;
+  }
+
+  .diagram-container :global(svg) {
+    width: 100%;
+    height: auto;
+    display: block;
+    color: var(--dg-ink);
+    font-family: var(--font-sans);
+  }
+
+  .diagram-container :global(svg .mono) {
+    font-family: var(--font-mono);
+  }
+
+  .diagram-caption {
+    margin-top: var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--ink-faint);
+    text-align: center;
+  }
+</style>

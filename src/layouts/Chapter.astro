@@ -1,0 +1,370 @@
+---
+import type { MarkdownHeading } from 'astro';
+import type { CollectionEntry } from 'astro:content';
+import Base from './Base.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import Toc from '../components/Toc.astro';
+
+interface Props {
+  chapter: CollectionEntry<'chapters'>;
+  headings: MarkdownHeading[];
+  prev?: CollectionEntry<'chapters'>;
+  next?: CollectionEntry<'chapters'>;
+}
+
+const { chapter, headings, prev, next } = Astro.props;
+const { order, title, summary, readingTime } = chapter.data;
+const chapterNum = String(order).padStart(2, '0');
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<Base
+  title={`${title} — Chapter ${chapterNum} — Backend from First Principles`}
+  description={summary}
+  path={`${base}/${chapter.id}/`}
+>
+  <SiteHeader crumb={`Chapter ${chapterNum}`} />
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-sticky">
+        <Toc headings={headings} />
+      </div>
+    </aside>
+
+    <main class="content" id="main">
+      <header class="chapter-header">
+        <div class="chapter-meta">
+          <span class="meta-pip"></span>
+          <span class="meta-num">CHAPTER {chapterNum}</span>
+          <span class="meta-sep" aria-hidden="true">•</span>
+          <span class="meta-time">{readingTime}</span>
+        </div>
+        <h1 class="chapter-title">{title}</h1>
+        <div class="chapter-summary-wrap">
+          <p class="chapter-summary">{summary}</p>
+        </div>
+      </header>
+
+      <article class="prose">
+        <slot />
+      </article>
+
+      <nav class="pagination" aria-label="Chapter navigation">
+        <div class="pagination-col pagination-prev">
+          {prev && (
+            <a class="pagination-card is-prev" href={`${base}/${prev.id}/`} rel="prev">
+              <span class="pagination-dir">← Previous</span>
+              <span class="pagination-title">{prev.data.navTitle ?? prev.data.title}</span>
+            </a>
+          )}
+        </div>
+        <div class="pagination-col pagination-next">
+          {next && (
+            <a class="pagination-card is-next" href={`${base}/${next.id}/`} rel="next">
+              <span class="pagination-dir">Next →</span>
+              <span class="pagination-title">{next.data.navTitle ?? next.data.title}</span>
+            </a>
+          )}
+        </div>
+      </nav>
+    </main>
+  </div>
+
+  <button id="floating-sidebar-restore" class="floating-sidebar-restore" aria-label="Show sidebar contents" title="Show sidebar contents (key: [)">
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="2" y="2" width="12" height="12" rx="2" />
+      <path d="M6 2v12" />
+      <path d="M9 8h4M11 6l2 2-2 2" />
+    </svg>
+    <span>Contents</span>
+  </button>
+</Base>
+
+<script>
+  const restoreBtn = document.getElementById('floating-sidebar-restore');
+  if (restoreBtn) {
+    restoreBtn.addEventListener('click', () => {
+      document.documentElement.classList.remove('sidebar-hidden');
+      localStorage.setItem('backend_sidebar_hidden', 'false');
+      window.dispatchEvent(new CustomEvent('sidebar-toggled', { detail: { hidden: false } }));
+    });
+  }
+</script>
+
+<style>
+  .layout {
+    max-width: 76rem;
+    margin: 0 auto;
+    padding: 0 var(--space-4);
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    gap: var(--space-8);
+    transition: max-width 200ms ease, padding 200ms ease;
+  }
+
+  /* Full Width Section when Sidebar is Hidden */
+  :global(.sidebar-hidden) .layout {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 100%;
+    padding: 0 var(--space-6);
+  }
+
+  :global(.sidebar-hidden) .sidebar {
+    display: none;
+  }
+
+  :global(.sidebar-hidden) .content {
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  :global(.sidebar-hidden) .chapter-header,
+  :global(.sidebar-hidden) .chapter-title,
+  :global(.sidebar-hidden) .chapter-summary-wrap,
+  :global(.sidebar-hidden) .chapter-summary,
+  :global(.sidebar-hidden) .prose,
+  :global(.sidebar-hidden) .pagination {
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  :global(.sidebar-hidden) .prose :global(*) {
+    max-width: 100% !important;
+  }
+
+  /* Floating restore button */
+  .floating-sidebar-restore {
+    display: none;
+    position: fixed;
+    bottom: 2rem;
+    left: 2rem;
+    z-index: 50;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-radius: 99px;
+    background: #161a22;
+    color: var(--ink);
+    border: 1px solid var(--line-strong);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .floating-sidebar-restore:hover {
+    background: #1c212c;
+    border-color: var(--accent-amber);
+    color: var(--accent-amber);
+    transform: translateY(-2px);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.65);
+  }
+  :global(.sidebar-hidden) .floating-sidebar-restore {
+    display: inline-flex;
+  }
+
+  .sidebar {
+    padding-top: var(--space-7);
+  }
+
+  .sidebar-sticky {
+    position: sticky;
+    top: 5rem;
+    max-height: calc(100vh - 6rem);
+    overflow-y: auto;
+    padding-right: var(--space-3);
+  }
+
+  .content {
+    min-width: 0;
+    padding-top: var(--space-7);
+    padding-bottom: var(--space-9);
+  }
+
+  .chapter-header {
+    max-width: var(--measure-wide);
+    margin-bottom: var(--space-8);
+    position: relative;
+  }
+
+  .chapter-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    color: var(--ink-faint);
+    margin-bottom: var(--space-3);
+  }
+
+  .meta-pip {
+    width: 6px;
+    height: 6px;
+    border-radius: 99px;
+    background: var(--accent-amber);
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.4);
+  }
+
+  .meta-num {
+    color: var(--accent-amber);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .meta-sep {
+    opacity: 0.4;
+  }
+
+  .meta-time {
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: 11px;
+  }
+
+  .chapter-title {
+    font-size: clamp(2.25rem, 4.5vw, 3.25rem);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.035em;
+    color: #ffffff;
+  }
+
+  .chapter-summary-wrap {
+    margin-top: var(--space-5);
+    border-left: 2px solid var(--accent-amber);
+    background: linear-gradient(to right, var(--accent-amber-soft), transparent 85%);
+    padding: var(--space-3) var(--space-4);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+
+  .chapter-summary {
+    font-family: var(--font-serif);
+    font-size: 1.1875rem;
+    font-weight: 400;
+    line-height: 1.75;
+    color: var(--ink);
+  }
+
+  /* Chapter Navigation Cards */
+  .pagination {
+    margin-top: var(--space-9);
+    padding-top: var(--space-7);
+    border-top: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4);
+    max-width: var(--measure-wide);
+  }
+
+  .pagination-col {
+    min-width: 0;
+  }
+  .pagination-next {
+    text-align: right;
+  }
+
+  .pagination-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: var(--space-4) var(--space-5);
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    background: var(--bg-subtle);
+    text-decoration: none;
+    transition: border-color 140ms ease, transform 140ms ease, background 140ms ease;
+  }
+  .pagination-card:hover {
+    border-color: var(--accent-amber);
+    transform: translateY(-2px);
+    background: var(--bg-surface);
+  }
+
+  .pagination-dir {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent-amber);
+    font-weight: 600;
+  }
+
+  .pagination-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: #ffffff;
+    line-height: 1.4;
+  }
+
+  @media (max-width: 960px) {
+    .layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sidebar {
+      display: none;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .pagination {
+      grid-template-columns: 1fr;
+    }
+    .pagination-next {
+      text-align: left;
+    }
+  }
+</style>
+
+<script>
+  // Scroll spy for Table of Contents
+  const tocLinks = new Map<string, HTMLAnchorElement>();
+  document.querySelectorAll<HTMLAnchorElement>('[data-toc-link]').forEach((link) => {
+    tocLinks.set(link.dataset.tocLink!, link);
+  });
+
+  if (tocLinks.size) {
+    const visibleHeadings = new Set<string>();
+    const order = [...tocLinks.keys()];
+
+    const updateToc = () => {
+      const activeId = order.find((id) => visibleHeadings.has(id));
+      if (!activeId) return;
+      tocLinks.forEach((link, id) => {
+        if (id === activeId) link.setAttribute('aria-current', 'true');
+        else link.removeAttribute('aria-current');
+      });
+    };
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) visibleHeadings.add(entry.target.id);
+          else visibleHeadings.delete(entry.target.id);
+        }
+        updateToc();
+      },
+      { rootMargin: '-56px 0px -70% 0px' }
+    );
+
+    tocLinks.forEach((_, id) => {
+      const el = document.getElementById(id);
+      if (el) observer.observe(el);
+    });
+  }
+
+  // Keyboard navigation between chapters
+  addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const target = e.target as HTMLElement;
+    if (target.matches('input, textarea, select, [contenteditable]')) return;
+
+    if (e.key === 'ArrowLeft') {
+      const prev = document.querySelector<HTMLAnchorElement>('a[rel="prev"]');
+      if (prev) location.href = prev.href;
+    } else if (e.key === 'ArrowRight') {
+      const next = document.querySelector<HTMLAnchorElement>('a[rel="next"]');
+      if (next) location.href = next.href;
+    }
+  });
+</script>

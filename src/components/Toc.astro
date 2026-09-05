@@ -1,0 +1,182 @@
+---
+import type { MarkdownHeading } from 'astro';
+
+interface Props { 
+  headings: MarkdownHeading[]; 
+}
+
+const items = Astro.props.headings.filter((h) => h.depth === 2 || h.depth === 3);
+
+let sectionCount = 0;
+const entries = items.map((h) => ({
+  ...h,
+  num: h.depth === 2 ? String(++sectionCount).padStart(2, '0') : '',
+}));
+---
+<nav class="toc" aria-label="Table of contents">
+  <div class="toc-eyebrow">
+    <div class="toc-eyebrow-left">
+      <span class="toc-eyebrow-text">Contents</span>
+      <span class="toc-eyebrow-count">{items.length}</span>
+    </div>
+    <button id="toc-hide-btn" class="toc-hide-btn" aria-label="Hide sidebar (full width reading)" title="Hide sidebar (full width mode)">
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="2" y="2" width="12" height="12" rx="2" />
+        <path d="M6 2v12" />
+      </svg>
+      <span>Hide</span>
+    </button>
+  </div>
+  <ol class="toc-list">
+    {entries.map((h) => (
+      <li class:list={['toc-item', h.depth === 3 && 'is-sub']}>
+        <a class="toc-link" href={`#${h.slug}`} data-toc-link={h.slug}>
+          <span class="toc-pip" aria-hidden="true"></span>
+          {h.num && <span class="toc-num">{h.num}</span>}
+          <span class="toc-text">{h.text}</span>
+        </a>
+      </li>
+    ))}
+  </ol>
+</nav>
+
+<style>
+  .toc {
+    font-size: var(--text-xs);
+  }
+
+  .toc-eyebrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ink-faint);
+    margin-bottom: var(--space-4);
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .toc-eyebrow-left {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .toc-eyebrow-count {
+    font-family: var(--font-mono);
+    color: var(--accent-amber);
+    font-size: 10px;
+  }
+
+  .toc-hide-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: var(--ink-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    transition: all 140ms ease;
+  }
+  .toc-hide-btn:hover {
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.3);
+    color: var(--accent-amber);
+  }
+
+  .toc-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .toc-link {
+    position: relative;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding: 5px 0 5px var(--space-2);
+    color: var(--ink-muted);
+    text-decoration: none;
+    line-height: 1.45;
+    border-radius: var(--radius-sm);
+    transition: color 140ms ease, background 140ms ease;
+  }
+  .toc-link:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  /* Active indicator pip */
+  .toc-pip {
+    position: absolute;
+    left: -6px;
+    top: 10px;
+    width: 3px;
+    height: 12px;
+    border-radius: 99px;
+    background: var(--accent-amber);
+    opacity: 0;
+    transform: scaleY(0.4);
+    transition: opacity 140ms ease, transform 140ms ease;
+  }
+
+  .toc-num {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--accent-amber);
+    flex-shrink: 0;
+    width: 2ch;
+  }
+
+  .toc-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .is-sub .toc-link {
+    padding-left: calc(var(--space-2) + 1.2ch);
+    font-size: 11.5px;
+    color: var(--ink-faint);
+  }
+  .is-sub .toc-link:hover {
+    color: var(--ink-muted);
+  }
+
+  /* Active state driven by IntersectionObserver */
+  .toc-link[aria-current='true'] {
+    color: #ffffff;
+    font-weight: 600;
+  }
+  .toc-link[aria-current='true'] .toc-pip {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+  .toc-link[aria-current='true'] .toc-num {
+    color: var(--accent-amber);
+  }
+</style>
+
+<script>
+  const hideBtn = document.getElementById('toc-hide-btn');
+  if (hideBtn) {
+    hideBtn.addEventListener('click', () => {
+      document.documentElement.classList.add('sidebar-hidden');
+      localStorage.setItem('backend_sidebar_hidden', 'true');
+      window.dispatchEvent(new CustomEvent('sidebar-toggled', { detail: { hidden: true } }));
+    });
+  }
+</script>

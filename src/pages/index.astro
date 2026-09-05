@@ -1,0 +1,663 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../layouts/Base.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+
+const chapters = (await getCollection('chapters'))
+  .filter((c) => !c.data.draft)
+  .sort((a, b) => a.data.order - b.data.order);
+
+const PARTS = [
+  { 
+    from: 1, to: 7, 
+    label: 'Part I: The Request Path', 
+    theme: 'cyan',
+    tag: 'NETWORKS & INGRESS',
+    blurb: 'How bytes on a network socket transform into a validated, handled application request.' 
+  },
+  { 
+    from: 8, to: 14, 
+    label: 'Part II: State & Machinery', 
+    theme: 'emerald',
+    tag: 'PERSISTENCE & STATE',
+    blurb: 'Data persistence, connection pooling, cache-aside patterns, background queues, and RPC.' 
+  },
+  { 
+    from: 15, to: 20, 
+    label: 'Part III: Running in Production', 
+    theme: 'amber',
+    tag: 'PRODUCTION & CONCURRENCY',
+    blurb: 'Structured logging, distributed tracing, graceful teardown, security defenses, and concurrency models.' 
+  },
+  { 
+    from: 21, to: 24, 
+    label: 'Part IV: Distribution & Scale', 
+    theme: 'violet',
+    tag: 'SCALE & STREAMING',
+    blurb: 'Containerization, automated testing strategies, event streaming with Kafka, and WebSockets.' 
+  },
+  { 
+    from: 25, to: 25, 
+    label: 'Part V: Personal & Developer Craft', 
+    theme: 'rose',
+    tag: 'SYSTEMS CRAFT',
+    blurb: 'Version control internals, content-addressable storage, Merkle DAGs, and collaborative conflict resolution.' 
+  },
+];
+
+const grouped = PARTS.map((part) => {
+  const partChapters = chapters.filter((c) => c.data.order >= part.from && c.data.order <= part.to);
+  return {
+    ...part,
+    chapters: partChapters,
+    from: partChapters[0]?.data.order ?? part.from,
+    to: partChapters[partChapters.length - 1]?.data.order ?? part.to,
+  };
+}).filter((part) => part.chapters.length > 0);
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<Base
+  title="Backend from First Principles — Engineering Reference"
+  description="A curated 18-chapter backend engineering manual covering network protocols, databases, caching, concurrency, and production architecture in JavaScript."
+  path={base ? `${base}/` : '/'}
+>
+  <SiteHeader />
+
+  <main class="home" id="main">
+    <header class="hero">
+      <div class="hero-ambient-glow" aria-hidden="true"></div>
+      
+      <div class="hero-eyebrow">
+        <span class="eyebrow-pip"></span>
+        <span>01 / {String(chapters.length).padStart(2, '0')} CURATED CHAPTERS</span>
+        <span class="eyebrow-sep">—</span>
+        <span>PRODUCTION SYSTEMS REFERENCE</span>
+      </div>
+
+      <h1 class="hero-title">Backend, from first principles.</h1>
+
+      <p class="hero-lede">
+        Most resources teach a framework. This manual investigates the underlying machinery — 
+        how kernel socket buffers work, how connection pools manage database contention, 
+        how the event loop handles non-blocking I/O, and how distributed brokers provide ordering guarantees.
+        Every chapter is self-contained with first-principles theory, diagrams, and runnable JavaScript code.
+      </p>
+
+      <div class="hero-specs">
+        <span class="spec-chip chip-cyan">
+          <span class="chip-dot"></span>
+          NexusIDE & MagnusCI Case Studies
+        </span>
+        <span class="spec-chip chip-emerald">
+          <span class="chip-dot"></span>
+          Kernel Sockets & Cgroups v2
+        </span>
+        <span class="spec-chip chip-amber">
+          <span class="chip-dot"></span>
+          Zero Framework Fluff
+        </span>
+        <span class="spec-chip chip-violet">
+          <span class="chip-dot"></span>
+          High-Bar Interview Curated
+        </span>
+      </div>
+
+      <div class="hero-cta-group">
+        <a class="btn btn-primary" href={`${base}/${chapters[0]?.id || '01-http-and-cors'}/`}>
+          <span>Begin with Chapter 01</span>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 8h10M9 4l4 4-4 4" />
+          </svg>
+        </a>
+        <a class="btn btn-secondary" href="#curriculum">
+          <span>Jump to Curriculum</span>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 3v10M4 9l4 4 4-4" />
+          </svg>
+        </a>
+      </div>
+    </header>
+
+    <section class="curriculum" id="curriculum" aria-label="Curriculum">
+      {grouped.map((part) => (
+        <section class={`part-section theme-${part.theme}`}>
+          <header class="part-header">
+            <div class="part-header-top">
+              <span class="part-tag-badge">
+                <span class="part-tag-dot"></span>
+                {part.tag}
+              </span>
+              <span class="part-range">
+                {part.from === part.to
+                  ? `CH ${String(part.from).padStart(2, '0')}`
+                  : `CH ${String(part.from).padStart(2, '0')} – ${String(part.to).padStart(2, '0')}`}
+              </span>
+            </div>
+
+            <div class="part-title-row">
+              <h2 class="part-title">
+                <span class="part-indicator"></span>
+                {part.label}
+              </h2>
+            </div>
+            <p class="part-blurb">{part.blurb}</p>
+          </header>
+
+          <div class="chapter-grid">
+            {part.chapters.map((c) => (
+              <a class="chapter-card" href={`${base}/${c.id}/`}>
+                <div class="card-left">
+                  <span class="chapter-num-badge">{String(c.data.order).padStart(2, '0')}</span>
+                  <div class="card-body">
+                    <h3 class="chapter-card-title">{c.data.navTitle ?? c.data.title}</h3>
+                    <p class="chapter-card-summary">{c.data.summary}</p>
+                  </div>
+                </div>
+
+                <div class="card-right">
+                  <span class="reading-time-pill">
+                    <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="8" cy="8" r="6"/>
+                      <path d="M8 4.5V8l2.5 1.5"/>
+                    </svg>
+                    {c.data.readingTime}
+                  </span>
+                  <div class="card-arrow" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M3 8h10M9 4l4 4-4 4"/>
+                    </svg>
+                  </div>
+                </div>
+              </a>
+            ))}
+          </div>
+        </section>
+      ))}
+    </section>
+
+    <footer class="footer">
+      <div class="footer-content">
+        <div class="footer-brand-line">
+          <span class="footer-brand">Backend from First Principles</span>
+          <span class="footer-sep">·</span>
+          <span class="footer-author">Aman Kashyap</span>
+        </div>
+        <p class="footer-note">Crafted for backend engineers who want to know how systems actually work underneath.</p>
+      </div>
+    </footer>
+  </main>
+</Base>
+
+<style>
+  .home {
+    max-width: 68rem;
+    margin: 0 auto;
+    padding: 0 var(--space-4);
+    position: relative;
+  }
+
+  /* Hero Section */
+  .hero {
+    position: relative;
+    padding: var(--space-9) 0 var(--space-8);
+    border-bottom: 1px solid var(--line);
+    max-width: var(--measure-wide);
+  }
+
+  /* Atmospheric Multi-Stop Radial Ambient Glow */
+  .hero-ambient-glow {
+    position: absolute;
+    top: 5%;
+    left: -15%;
+    width: 900px;
+    height: 500px;
+    background: 
+      radial-gradient(ellipse at 20% 30%, rgba(56, 189, 248, 0.08), transparent 50%),
+      radial-gradient(ellipse at 75% 40%, rgba(245, 158, 11, 0.07), transparent 45%),
+      radial-gradient(ellipse at 50% 80%, rgba(167, 139, 250, 0.05), transparent 60%);
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  .hero-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    letter-spacing: 0.1em;
+    color: var(--accent-amber);
+    font-weight: 600;
+    margin-bottom: var(--space-4);
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.22);
+    padding: 0.3rem 0.75rem;
+    border-radius: 99px;
+  }
+
+  .eyebrow-pip {
+    width: 6px;
+    height: 6px;
+    border-radius: 99px;
+    background: var(--accent-amber);
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+  }
+
+  .eyebrow-sep {
+    opacity: 0.4;
+  }
+
+  .hero-title {
+    font-size: var(--text-display);
+    font-weight: 700;
+    letter-spacing: -0.035em;
+    line-height: 1.12;
+    color: #ffffff;
+  }
+
+  .hero-lede {
+    margin-top: var(--space-5);
+    font-size: var(--text-lg);
+    line-height: 1.7;
+    color: var(--ink-muted);
+    max-width: var(--measure);
+  }
+
+  /* Engineering Specs Pill Chips */
+  .hero-specs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-6);
+  }
+
+  .spec-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    padding: 0.35rem 0.75rem;
+    border-radius: 99px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    color: var(--ink);
+    letter-spacing: 0.02em;
+    transition: all 160ms ease;
+  }
+  .spec-chip:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.15);
+  }
+
+  .chip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 99px;
+  }
+
+  .chip-cyan .chip-dot { background: var(--domain-cyan); box-shadow: 0 0 6px var(--domain-cyan); }
+  .chip-emerald .chip-dot { background: var(--domain-emerald); box-shadow: 0 0 6px var(--domain-emerald); }
+  .chip-amber .chip-dot { background: var(--domain-amber); box-shadow: 0 0 6px var(--domain-amber); }
+  .chip-violet .chip-dot { background: var(--domain-violet); box-shadow: 0 0 6px var(--domain-violet); }
+
+  /* CTAs */
+  .hero-cta-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin-top: var(--space-7);
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-5);
+    border-radius: var(--radius);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-decoration: none;
+    letter-spacing: -0.01em;
+    transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease, border-color 140ms ease;
+  }
+
+  .btn-primary {
+    background: #ffffff;
+    color: #0d0f13;
+    box-shadow: 0 2px 10px rgba(255, 255, 255, 0.1);
+  }
+  .btn-primary:hover {
+    background: #f8fafc;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(255, 255, 255, 0.2);
+  }
+  .btn-primary svg {
+    transition: transform 140ms ease;
+  }
+  .btn-primary:hover svg {
+    transform: translateX(2px);
+  }
+
+  .btn-secondary {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--ink);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
+    transform: translateY(-1px);
+  }
+
+  /* Curriculum Section */
+  .curriculum {
+    padding: var(--space-8) 0;
+  }
+
+  .part-section + .part-section {
+    margin-top: var(--space-9);
+  }
+
+  /* Domain Color Themes */
+  .theme-cyan {
+    --part-color: var(--domain-cyan);
+    --part-soft: var(--domain-cyan-soft);
+    --part-border: var(--domain-cyan-border);
+    --part-surface: var(--domain-cyan-surface);
+  }
+
+  .theme-emerald {
+    --part-color: var(--domain-emerald);
+    --part-soft: var(--domain-emerald-soft);
+    --part-border: var(--domain-emerald-border);
+    --part-surface: var(--domain-emerald-surface);
+  }
+
+  .theme-amber {
+    --part-color: var(--domain-amber);
+    --part-soft: var(--domain-amber-soft);
+    --part-border: var(--domain-amber-border);
+    --part-surface: var(--domain-amber-surface);
+  }
+
+  .theme-violet {
+    --part-color: var(--domain-violet);
+    --part-soft: var(--domain-violet-soft);
+    --part-border: var(--domain-violet-border);
+    --part-surface: var(--domain-violet-surface);
+  }
+
+  .theme-rose {
+    --part-color: var(--domain-rose);
+    --part-soft: var(--domain-rose-soft);
+    --part-border: var(--domain-rose-border);
+    --part-surface: var(--domain-rose-surface);
+  }
+
+  /* Part Header */
+  .part-header {
+    margin-bottom: var(--space-5);
+    padding-bottom: var(--space-4);
+    border-bottom: 1px solid var(--line);
+    position: relative;
+  }
+
+  .part-header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+
+  .part-tag-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    color: var(--part-color);
+  }
+
+  .part-tag-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 99px;
+    background: var(--part-color);
+    box-shadow: 0 0 6px var(--part-color);
+  }
+
+  .part-range {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    color: var(--part-color);
+    background: var(--part-soft);
+    border: 1px solid var(--part-border);
+    padding: 0.2rem 0.6rem;
+    border-radius: 99px;
+    letter-spacing: 0.05em;
+  }
+
+  .part-title-row {
+    display: flex;
+    align-items: center;
+  }
+
+  .part-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    font-size: var(--text-2xl);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    color: #ffffff;
+  }
+
+  .part-indicator {
+    width: 4px;
+    height: 20px;
+    background: var(--part-color);
+    border-radius: 2px;
+    box-shadow: 0 0 8px var(--part-color);
+  }
+
+  .part-blurb {
+    margin-top: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--ink-muted);
+    max-width: var(--measure);
+  }
+
+  /* Tactile Chapter Card Grid */
+  .chapter-grid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .chapter-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: 1.15rem 1.4rem;
+    border-radius: var(--radius-lg);
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.065);
+    text-decoration: none;
+    transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .chapter-card::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--part-color);
+    opacity: 0.25;
+    transition: opacity 160ms ease, width 160ms ease;
+  }
+
+  .chapter-card:hover {
+    background: rgba(255, 255, 255, 0.038);
+    border-color: var(--part-border);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.5);
+  }
+
+  .chapter-card:hover::before {
+    opacity: 1;
+    width: 4px;
+  }
+
+  .card-left {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-width: 0;
+  }
+
+  .chapter-num-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    color: var(--part-color);
+    background: var(--part-soft);
+    border: 1px solid var(--part-border);
+    border-radius: 6px;
+    padding: 0.25rem 0.55rem;
+    flex-shrink: 0;
+    letter-spacing: 0.05em;
+  }
+
+  .card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .chapter-card-title {
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.015em;
+    transition: color 140ms ease;
+  }
+  .chapter-card:hover .chapter-card-title {
+    color: #ffffff;
+  }
+
+  .chapter-card-summary {
+    font-size: var(--text-xs);
+    color: var(--ink-muted);
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .card-right {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    flex-shrink: 0;
+  }
+
+  .reading-time-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--ink-muted);
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 0.25rem 0.6rem;
+    border-radius: 99px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+
+  .card-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 99px;
+    background: rgba(255, 255, 255, 0.025);
+    color: var(--ink-faint);
+    transition: all 160ms ease;
+  }
+  .chapter-card:hover .card-arrow {
+    background: var(--part-soft);
+    color: var(--part-color);
+    transform: translateX(3px);
+  }
+
+  @media (max-width: 640px) {
+    .chapter-card {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: var(--space-3);
+    }
+    .card-right {
+      width: 100%;
+      justify-content: space-between;
+      padding-top: var(--space-2);
+      border-top: 1px solid rgba(255, 255, 255, 0.04);
+    }
+  }
+
+  /* Footer */
+  .footer {
+    padding: var(--space-8) 0 var(--space-9);
+    border-top: 1px solid var(--line);
+    font-size: var(--text-xs);
+    color: var(--ink-faint);
+  }
+
+  .footer-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .footer-brand-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .footer-brand {
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .footer-sep {
+    opacity: 0.4;
+  }
+
+  .footer-author {
+    color: var(--accent-amber);
+    font-weight: 500;
+  }
+
+  .footer-note {
+    color: var(--ink-muted);
+  }
+</style>

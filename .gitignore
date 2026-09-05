@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.astro/
+
+# Ignore all text files and transcripts locally
+**/text-files/
+text-files/
+*.txt
+.vercel
+.env*
+ponytail/

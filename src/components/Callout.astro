@@ -1,0 +1,86 @@
+---
+interface Props {
+  type?: 'info' | 'ok' | 'warn';
+  title?: string;
+}
+const { type = 'info', title } = Astro.props;
+
+const DEFAULT_TITLES = {
+  info: 'Note',
+  ok: 'Best Practice',
+  warn: 'Important Consideration',
+} as const;
+---
+<aside class:list={['callout', `callout-${type}`]}>
+  <header class="callout-header">
+    <svg class="callout-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {type === 'ok' && <polyline points="4 10.5 8 14.5 16 5.5" />}
+      {type === 'warn' && <><path d="M10 3.2 18 17H2Z" /><line x1="10" y1="8" x2="10" y2="11.5" /><circle cx="10" cy="14.2" r="0.6" fill="currentColor" /></>}
+      {type === 'info' && <><circle cx="10" cy="10" r="7.5" /><line x1="10" y1="9" x2="10" y2="14" /><circle cx="10" cy="6.2" r="0.6" fill="currentColor" /></>}
+    </svg>
+    <span class="callout-title">{title ?? DEFAULT_TITLES[type]}</span>
+  </header>
+  <div class="callout-content">
+    <slot />
+  </div>
+</aside>
+
+<style>
+  .callout {
+    margin: var(--space-6) 0;
+    padding: var(--space-4) var(--space-5);
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    font-size: var(--text-sm);
+    line-height: 1.7;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .callout-info {
+    border-left: 3px solid var(--accent);
+    background: linear-gradient(to right, rgba(96, 165, 250, 0.05), var(--bg-subtle) 35%);
+  }
+  .callout-ok {
+    border-left: 3px solid #22c55e;
+    background: linear-gradient(to right, rgba(34, 197, 94, 0.05), var(--bg-subtle) 35%);
+  }
+  .callout-warn {
+    border-left: 3px solid var(--accent-amber);
+    background: linear-gradient(to right, rgba(245, 158, 11, 0.05), var(--bg-subtle) 35%);
+  }
+
+  .callout-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+    font-weight: 650;
+    font-size: var(--text-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #ffffff;
+  }
+
+  .callout-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+  .callout-info .callout-icon { color: var(--accent); }
+  .callout-ok .callout-icon { color: #22c55e; }
+  .callout-warn .callout-icon { color: var(--accent-amber); }
+
+  .callout-content {
+    color: var(--ink);
+  }
+  .callout-content :global(> * + *) {
+    margin-top: var(--space-2);
+  }
+  .callout-content :global(p) {
+    margin: 0;
+  }
+  .callout-content :global(code) {
+    font-size: 0.9em;
+  }
+</style>

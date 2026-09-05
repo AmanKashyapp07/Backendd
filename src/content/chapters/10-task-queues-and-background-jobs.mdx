@@ -1,0 +1,1237 @@
+---
+order: 10
+title: "Task Queues & Background Jobs"
+navTitle: "Task Queues & Background Jobs"
+summary: "Chapter 10 of Backend from First Principles: Task Queues & Background Jobs."
+readingTime: "3-4 hours"
+keywords:
+  - "task"
+  - "queues"
+  - "background"
+  - "jobs"
+  - "workers"
+  - "async"
+  - "redis"
+  - "sidekiq"
+  - "celery"
+---
+A detailed backend reference
+
+Background Jobs\
+& Task Queues
+=============
+
+Any code that runs outside the request-response cycle, deferred, retryable, non-blocking, is a background job. Understanding how to design and operate them is what separates a toy backend from a production-grade one.
+
+---
+
+01
+
+## What is a Background Task?
+
+A **background task** (also called a background job) is any piece of code, logic, or workflow that runs _outside_ of the request-response lifecycle. Think of your typical HTTP interaction: a client sends a request, your server processes it and sends a response. Anything that doesn't need to happen _within_ that tight window is a candidate for a background task.
+
+The key characteristic: **it does not need to be synchronous**. It is not mission-critical in the sense that the client is waiting for it right now. Because of this, we can safely offload it to a separate process that finishes in its own time, according to how it has been programmed.
+
+<Diagram>
+<svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" width="640"><rect x="20" y="70" width="110" height="60" rx="6" fill="var(--dg-inverse)" stroke="var(--dg-accent)" stroke-width="1.5"></rect><text x="75" y="104" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="12">CLIENT</text><line x1="132" y1="90" x2="238" y2="90" stroke="var(--dg-accent)" stroke-width="1.5" marker-end="url(#arr)"></line><text x="185" y="82" text-anchor="middle" fill="var(--dg-ink-2)" font-family="var(--font-diagram-mono)" font-size="10">REQUEST</text><line x1="238" y1="110" x2="132" y2="110" stroke="var(--dg-info-soft)" stroke-width="1.5" marker-end="url(#arr2)"></line><text x="185" y="130" text-anchor="middle" fill="var(--dg-ink-2)" font-family="var(--font-diagram-mono)" font-size="10">RESPONSE</text><rect x="240" y="60" width="160" height="80" rx="6" fill="var(--dg-inverse)" stroke="var(--dg-warn-soft)" stroke-width="1.5"></rect><text x="320" y="95" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="12">SERVER</text><text x="320" y="113" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="10">(main process)</text><line x1="400" y1="100" x2="460" y2="100" stroke="var(--dg-ink-3)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arr3)"></line><text x="430" y="88" text-anchor="middle" fill="var(--dg-ink-3)" font-family="var(--font-diagram-mono)" font-size="9">offload</text><rect x="462" y="60" width="200" height="80" rx="6" fill="var(--dg-inverse)" stroke="var(--dg-ink-3)" stroke-width="1.5" stroke-dasharray="5 3"></rect><text x="562" y="90" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="12">BACKGROUND</text><text x="562" y="108" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="12">TASK</text><text x="562" y="124" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="9">(separate process)</text><text x="185" y="168" text-anchor="middle" fill="var(--dg-accent)" font-family="var(--font-diagram-mono)" font-size="10">&#x3C;- request-response lifecycle -></text><text x="562" y="168" text-anchor="middle" fill="var(--dg-ink-3)" font-family="var(--font-diagram-mono)" font-size="10">outside lifecycle</text><defs><marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--dg-accent)"></path></marker><marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--dg-info-soft)"></path></marker><marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--dg-ink-3)"></path></marker></defs></svg>
+</Diagram>
+
+<Callout type="info" title="MDN Reference">
+The concept maps directly to the browser's [event loop and task queue model](https://developer.mozilla.org/en-US/docs/Web/API/queueMicrotask), macrotasks vs microtasks. On the server, the same principle applies: some work doesn't belong in the synchronous call stack.
+</Callout>
+
+02
+
+## Why We Need Background Tasks
+
+The classic motivating example is **user signup + email verification**. Here's the full picture of what happens:
+
+- 1
+
+  **User fills signup form**
+
+  They provide email, username, password. The frontend validates basic constraints and makes an API call to your backend.
+
+- 2
+
+  **Backend validates & stores data**
+
+  Password strength, uniqueness of email, hashing, writing user record to the database, generating a one-time verification token (6-digit OTP or a signed URL).
+
+- 3
+
+  **Send a verification email**
+
+  This requires calling a _third-party email provider_ (Resend, Mailgun, Brevo). Your backend is now making an outbound HTTP request to an external service.
+
+- 4
+
+  **Email provider processes and delivers**
+
+  The provider checks your API key, validates the email, routes via SMTP, and delivers. Success/failure is returned.
+
+### The Problem: Synchronous Email Sending
+
+If steps 3-4 happen synchronously in your request handler, you've introduced a **hard dependency** on an external service inside your critical path. Two failure scenarios:
+
+No error handling
+
+The external API call fails -> your entire signup API returns a 500. The user sees an error trying to sign up. Terrible UX.
+
+With error handling
+
+You swallow the email error and return 200 "Check your email!", but the email was never sent. The user waits forever for a verification link that never comes. Also terrible UX.
+
+In both cases, the fundamental problem is the same: **you're coupling your API's reliability to a third-party service's uptime**. Offloading the email to a background task decouples them completely.
+
+03
+
+## Synchronous vs Asynchronous Workflow
+
+### Synchronous (Blocking) Flow
+
+<Diagram>
+<svg viewBox="0 0 680 160" xmlns="http://www.w3.org/2000/svg" width="640"><defs><marker id="a1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-accent)"></path></marker><marker id="a2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-warn-soft)"></path></marker><marker id="a3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-accent-soft)"></path></marker></defs><rect x="10" y="50" width="90" height="50" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-accent)" stroke-width="1.2"></rect><text x="55" y="80" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">CLIENT</text><rect x="170" y="50" width="100" height="50" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-warn-soft)" stroke-width="1.2"></rect><text x="220" y="75" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">YOUR</text><text x="220" y="91" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">SERVER</text><rect x="400" y="50" width="120" height="50" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-accent-soft)" stroke-width="1.2"></rect><text x="460" y="75" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">EMAIL</text><text x="460" y="91" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">PROVIDER</text><line x1="102" y1="68" x2="168" y2="68" stroke="var(--dg-accent)" stroke-width="1.2" marker-end="url(#a1)"></line><text x="135" y="62" text-anchor="middle" fill="var(--dg-ink-2)" font-family="var(--font-diagram-mono)" font-size="9">POST /signup</text><line x1="272" y1="68" x2="398" y2="68" stroke="var(--dg-warn-soft)" stroke-width="1.2" marker-end="url(#a2)"></line><text x="335" y="62" text-anchor="middle" fill="var(--dg-ink-2)" font-family="var(--font-diagram-mono)" font-size="9">send email (BLOCKS)</text><line x1="398" y1="84" x2="272" y2="84" stroke="var(--dg-accent-soft)" stroke-width="1.2" marker-end="url(#a3)"></line><text x="335" y="100" text-anchor="middle" fill="var(--dg-accent-soft)" font-family="var(--font-diagram-mono)" font-size="9">fails / slow</text><line x1="168" y1="84" x2="102" y2="84" stroke="var(--dg-accent-soft)" stroke-width="1.2" marker-end="url(#a3)"></line><text x="135" y="100" text-anchor="middle" fill="var(--dg-accent-soft)" font-family="var(--font-diagram-mono)" font-size="9">500 error</text><text x="340" y="140" text-anchor="middle" fill="var(--dg-accent-soft)" font-family="var(--font-diagram-mono)" font-size="10">^ external failure kills your API response</text></svg>
+</Diagram>
+
+### Asynchronous (Background) Flow
+
+<Diagram>
+<svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" width="680"><defs><marker id="b1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-accent)"></path></marker><marker id="b2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-ok-soft)"></path></marker><marker id="b3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-info-soft)"></path></marker><marker id="b4" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-warn-soft)"></path></marker></defs><rect x="10" y="20" width="90" height="50" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-accent)" stroke-width="1.2"></rect><text x="55" y="50" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">CLIENT</text><rect x="170" y="20" width="100" height="50" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-warn-soft)" stroke-width="1.2"></rect><text x="220" y="45" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">SERVER</text><text x="220" y="61" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">(producer)</text><rect x="350" y="20" width="100" height="50" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-info-soft)" stroke-width="1.2"></rect><text x="400" y="45" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">QUEUE</text><text x="400" y="61" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">(broker)</text><rect x="350" y="145" width="100" height="50" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-plum)" stroke-width="1.2"></rect><text x="400" y="170" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">WORKER</text><text x="400" y="186" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">(consumer)</text><rect x="530" y="145" width="120" height="50" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-ok-soft)" stroke-width="1.2"></rect><text x="590" y="170" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">EMAIL</text><text x="590" y="186" text-anchor="middle" fill="var(--dg-on-inverse)" font-family="var(--font-diagram-mono)" font-size="11">PROVIDER</text><line x1="102" y1="40" x2="168" y2="40" stroke="var(--dg-accent)" stroke-width="1.2" marker-end="url(#b1)"></line><text x="135" y="34" text-anchor="middle" fill="var(--dg-ink-2)" font-family="var(--font-diagram-mono)" font-size="9">POST /signup</text><line x1="272" y1="40" x2="348" y2="40" stroke="var(--dg-info-soft)" stroke-width="1.2" marker-end="url(#b3)"></line><text x="310" y="34" text-anchor="middle" fill="var(--dg-ink-2)" font-family="var(--font-diagram-mono)" font-size="9">enqueue task</text><line x1="168" y1="56" x2="102" y2="56" stroke="var(--dg-ok-soft)" stroke-width="1.2" marker-end="url(#b2)"></line><text x="135" y="72" text-anchor="middle" fill="var(--dg-ok-soft)" font-family="var(--font-diagram-mono)" font-size="9">201 Created</text><line x1="400" y1="72" x2="400" y2="143" stroke="var(--dg-plum)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#b4)"></line><text x="418" y="112" fill="var(--dg-plum)" font-family="var(--font-diagram-mono)" font-size="9">dequeue</text><line x1="452" y1="170" x2="528" y2="170" stroke="var(--dg-ok-soft)" stroke-width="1.2" marker-end="url(#b2)"></line><text x="490" y="164" text-anchor="middle" fill="var(--dg-ink-2)" font-family="var(--font-diagram-mono)" font-size="9">send email</text><text x="230" y="120" text-anchor="middle" fill="var(--dg-ok-soft)" font-family="var(--font-diagram-mono)" font-size="10">API unblocked instantly </text><text x="490" y="218" text-anchor="middle" fill="var(--dg-plum)" font-family="var(--font-diagram-mono)" font-size="10">background: retries handled automatically</text></svg>
+</Diagram>
+
+<Callout type="info" title="Key Insight">
+The server **enqueues the task and returns immediately**. The client gets a response without waiting for the email to be sent. If the email provider goes down, the retry mechanism handles it, the API response is never affected.
+</Callout>
+
+04
+
+## How Task Queues Work
+
+A **task queue** is a system for managing and distributing background jobs. It is the engine behind the scenes that enables reliable, decoupled background processing. Think of it as a _to-do list for your backend_, your application adds items to the list, and workers pick them off one by one.
+
+Producer
+
+Your application code (any language/framework). Creates a task, serializes it (usually JSON), and pushes it into the queue. This is called **enqueuing** (ENQ).
+
+Queue / Broker
+
+The middleware that stores tasks until a worker is ready. Examples: Redis, RabbitMQ, Amazon SQS. Provides durability, ordering, and delivery guarantees.
+
+Consumer / Worker
+
+A separate process (or thread) that constantly polls the queue, picks up tasks (this is **dequeuing**: DEQ), deserializes them, and executes the registered handler function.
+
+Handler
+
+The actual function/method registered for a task type. Contains the real business logic (e.g., calling the email API). Same code you'd run synchronously, but now living inside a worker.
+
+### Serialization & Deserialization
+
+Because tasks cross process boundaries, all data must be serialized. JSON is the most common format. The worker deserializes back to native types:
+
+```text
+// Task payload (JSON in the queue)
+{
+  "type": "send_verification_email",
+  "user_id": "usr_01J2K...",
+  "email": "alice@example.com",
+  "token": "eyJhbGci...",
+  "created_at": "2024-01-15T10:30:00Z"
+}
+JSON
+```
+
+JavaScript (Node.js)
+
+Deserializes cleanly to a native JavaScript `object` via `JSON.parse()`
+
+05
+
+## Producer & Consumer Deep Dive
+
+### The Producer Side
+
+The producer's responsibility is minimal and fast, it should never do heavy work. Its only job:
+
+1. Gather all data the consumer will need to perform the task.
+2. Serialize that data into a portable format (JSON).
+3. Push the serialized payload into the queue.
+4. Return, immediately. Do not wait.
+
+### The Consumer / Worker Side
+
+The consumer runs as a **separate process**: either in the same codebase (a different entry-point / binary) or an entirely separate service. It:
+
+1. **Configures which queue to listen on**: different queues for different task types (email queue, notification queue, image processing queue, etc.).
+2. **Registers handlers**: for each task type, a function is registered. When that task is dequeued, that function is called.
+3. **Polls or is pushed tasks**: depending on the broker (Redis/RabbitMQ use long-polling; SQS uses polling intervals).
+4. **Deserializes the payload**: JSON -> native struct/dict/object.
+5. **Executes the handler**: the actual work: calling the email API, resizing the image, etc.
+6. **Acknowledges (ACK) success**: tells the queue the task is done and can be removed.
+7. **Reports failure (NACK)**: on error, the queue knows to retry.
+
+<Callout type="info" title="Multiple Consumer Instances">
+You can run _N_ consumer processes in parallel. Each picks up tasks independently. This is how you scale horizontally, more users -> more workers, not bigger servers.
+</Callout>
+
+06
+
+## Brokers & Technologies
+
+The "queue" is backed by a real piece of infrastructure, a **message broker**. Here are the main options:
+
+| Broker                      | Type                | Best For                                          | Notes                                                              |
+| --------------------------- | ------------------- | ------------------------------------------------- | ------------------------------------------------------------------ |
+| **Redis** (Pub/Sub + Lists) | In-memory store     | Fast, low-latency tasks. Celery + BullMQ default. | Data can be lost on crash unless persistence is enabled (AOF/RDB). |
+| **RabbitMQ**                | AMQP message broker | Complex routing, fanout, topic exchanges.         | Very reliable, rich routing rules, requires ops overhead.          |
+| **Amazon SQS**              | Managed cloud queue | Scalable, multi-region, serverless-friendly.      | AWS-native, no server management. Standard + FIFO queues.          |
+| **Redis Streams**           | Persistent log      | Consumer groups, replay, auditing.                | More durable than basic Redis lists. Built into Redis 5+.          |
+
+<Callout type="info" title="Framework &lt;-&gt; Broker Pairings">
+**BullMQ (Node.js)** -> Redis  |  **Sidekiq (Ruby)** -> Redis
+</Callout>
+
+### Redis Internals: How It Stores Tasks
+
+Redis offers **two different data structures** used by task queue libraries under the hood. Understanding which one your framework uses, and why, helps you operate it correctly in production.
+
+#### Redis Lists (used by: Celery, BullMQ, Sidekiq)
+
+A Redis List is a doubly-linked list of strings. Task queues use two commands: `LPUSH` (producer pushes to left/head) and `BRPOP` (worker blocks waiting to pop from right/tail). This gives you classic FIFO behaviour.
+
+```text
+# What Celery does under the hood in Redis:
+
+# Producer (your API), pushes serialized task to left of list
+LPUSH celery '{"task":"send_email","args":["alice@example.com","token123"]}'
+
+# Worker, blocks waiting for item, pops from right (FIFO)
+# BRPOP blocks for up to 5 seconds, then re-polls
+BRPOP celery 5
+
+# To see queue depth at any time:
+LLEN celery   # -> 42 (42 pending tasks)
+Redis CLI
+```
+
+Problem with Lists
+
+Once a worker pops the task (`BRPOP`), it's **gone from the list**. If the worker crashes before ACKing, the task is permanently lost. BullMQ solves this by moving tasks to a separate "active" sorted set and only deleting on ACK.
+
+No replay
+
+Lists are destructive. You cannot re-read old tasks for debugging or auditing.
+
+No consumer groups
+
+A single message can only go to one consumer. You cannot have multiple independent consumer groups reading the same queue (like Kafka).
+
+#### Redis Streams (used by: Asynq, newer architectures)
+
+Redis Streams (added in Redis 5.0) is an append-only log, conceptually similar to Apache Kafka but in Redis. It was designed specifically to solve the problems of Redis Lists for message queuing.
+
+```text
+# Producer adds entry to stream
+# * means auto-generate ID (timestamp-sequence: 1705312200000-0)
+XADD myapp:email_queue * user_id usr_01J2K email alice@example.com token eyJ...
+
+# Create a consumer group (workers belong to a group)
+XGROUP CREATE myapp:email_queue email_workers $ MKSTREAM
+
+# Worker reads next undelivered message (> means "new")
+XREADGROUP GROUP email_workers worker-1 COUNT 1 BLOCK 5000 STREAMS myapp:email_queue >
+
+# After successful processing, ACK the message by ID
+XACK myapp:email_queue email_workers 1705312200000-0
+
+# Check pending (delivered but not ACKed), these are in-flight tasks
+XPENDING myapp:email_queue email_workers - + 10
+Redis CLI
+```
+
+| Feature              | Redis Lists                                                                           | Redis Streams                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| **Storage model**    | Destructive pop, task gone after dequeue                                              | Append-only log, tasks persist after delivery                                  |
+| **Crash safety**     | Task lost if worker crashes after pop but before ACK (unless library adds workaround) | Built-in PEL (Pending Entry List), unACKed tasks are tracked, auto-redelivered |
+| **Consumer groups**  | Not supported natively                                                                | Native consumer groups, multiple independent groups can read same stream       |
+| **Message replay**   | No, once popped, gone                                                                 | Yes, read any historical ID range                                              |
+| **Message ordering** | FIFO within the list                                                                  | Strict chronological order by auto-generated ID                                |
+| **Observability**    | Only queue length (`LLEN`)                                                            | Full introspection: pending, delivered, acknowledged counts                    |
+| **Memory**           | Lower (entries deleted on pop)                                                        | Higher (entries persist until trimmed with `MAXLEN`)                           |
+| **Used by**          | BullMQ (Node.js), Celery, Sidekiq                                                     | Redis Streams consumers, event logs                                            |
+
+<Callout type="info" title="Which to use?">
+For most SaaS workloads, **Redis Lists** (via Celery/BullMQ) are perfectly fine, the libraries handle crash safety in their own layer. Choose **Redis Streams** when you need audit trails, message replay, or multiple independent consumer groups consuming the same events.
+</Callout>
+
+16
+
+## Amazon SQS: Standard vs FIFO Queues
+
+Amazon SQS is AWS's fully managed message queuing service. No servers to manage, scales automatically, and replicates across multiple availability zones. It has two modes with fundamentally different guarantees.
+
+| Property          | Standard Queue                                                  | FIFO Queue                                                                 |
+| ----------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| **Throughput**    | Nearly unlimited (thousands of TPS)                             | 300 TPS (3,000 with batching)                                              |
+| **Ordering**      | Best-effort, NOT guaranteed                                     | Strict FIFO, guaranteed within a Message Group                             |
+| **Delivery**      | At-least-once, a message can be delivered _more than once_      | Exactly-once, deduplication ID prevents duplicates                         |
+| **Deduplication** | None built-in                                                   | Built-in 5-minute deduplication window using content hash or explicit ID   |
+| **Use case**      | High-volume, order-doesn't-matter tasks (emails, notifications) | Financial transactions, inventory updates, anything requiring strict order |
+| **Naming**        | `my-queue`                                                      | Must end in `.fifo` -> `my-queue.fifo`                                     |
+| **Cost**          | $0.40 per million requests                                      | $0.50 per million requests                                                 |
+
+### How SQS Visibility Timeout Works (AWS-Specific)
+
+SQS implements visibility timeout natively. When a worker calls `ReceiveMessage`, the message becomes invisible to all other consumers for the configured timeout (default 30s, max 12 hours). The worker must call `DeleteMessage` on success, or do nothing to let it become visible again for retry.
+
+```js title="sqs-worker.js / AWS SQS producer and consumer in Node.js"
+import { SQSClient, SendMessageCommand, ReceiveMessageCommand, DeleteMessageCommand } from '@aws-sdk/client-sqs';
+
+const sqs = new SQSClient({ region: 'us-east-1' });
+const QUEUE_URL = process.env.SQS_QUEUE_URL;
+
+// -- PRODUCER: Send message to SQS queue --
+export async function enqueueJob(payload) {
+  const command = new SendMessageCommand({
+    QueueUrl: QUEUE_URL,
+    MessageBody: JSON.stringify(payload),
+  });
+  return sqs.send(command);
+}
+
+// -- CONSUMER: Long-poll messages, process, and delete (ACK) --
+export async function pollQueue(processJob) {
+  const receiveCmd = new ReceiveMessageCommand({
+    QueueUrl: QUEUE_URL,
+    MaxNumberOfMessages: 10,
+    WaitTimeSeconds: 20, // Long-polling (reduces empty calls and costs)
+    VisibilityTimeout: 30, // 30 seconds to finish before message reappears
+  });
+
+  const response = await sqs.send(receiveCmd);
+  const messages = response.Messages || [];
+
+  for (const msg of messages) {
+    try {
+      const data = JSON.parse(msg.Body);
+      await processJob(data);
+
+      // ACK: delete message upon successful processing
+      await sqs.send(new DeleteMessageCommand({
+        QueueUrl: QUEUE_URL,
+        ReceiptHandle: msg.ReceiptHandle,
+      }));
+    } catch (err) {
+      console.error('Job processing failed; message will reappear after VisibilityTimeout', err);
+    }
+  }
+}
+```
+
+<Callout type="info" title="Standard Queue + Idempotency">
+Because Standard SQS delivers at-least-once, your handlers **must be idempotent**. A message can be delivered twice in rare cases (network hiccup, AZ failover). Always design handlers to be safe to re-run. See Section 17 for idempotency patterns.
+</Callout>
+
+07
+
+## Retries & Exponential Backoff
+
+When a task fails (handler throws an exception, external API returns 5xx, network timeout), the framework **re-enqueues the task** for retry. Naively retrying immediately would hammer an already-struggling service. The solution: **exponential backoff**.
+
+### Exponential Backoff Algorithm
+
+After each failure, the wait time before the next retry doubles. A common formula:
+
+```text
+// Retry delay formula
+delay = base_delay * (2 ^ attempt_number) + jitter
+
+// Example with base_delay=1min, max_retries=5:
+Attempt 1 -> wait 1 min   -> retry
+Attempt 2 -> wait 2 min   -> retry
+Attempt 3 -> wait 4 min   -> retry
+Attempt 4 -> wait 8 min   -> retry
+Attempt 5 -> wait 16 min  -> DEAD LETTER QUEUE
+PSEUDOCODE
+```
+
+Retry delay visualised
+
+1 min
+
+2 min
+
+4 min
+
+8 min
+
+16 min
+
+#### Why Jitter Matters
+
+Without jitter (random noise added to the delay), all consumers retry at the exact same time after a failure, creating a **thundering herd** that hits the external service with a spike. Adding a small random offset spreads the load.
+
+#### Dead Letter Queue (DLQ)
+
+After exhausting all retries, the task is moved to a **Dead Letter Queue**. This is a separate queue for persistently-failed tasks. Engineers can inspect DLQ messages, diagnose the root cause, and manually replay them after the issue is fixed.
+
+<Callout type="info" title="Real-World Note">
+Major email providers (Resend, Mailgun) have SLAs of 99.9%+ uptime. In practice, downtime is measured in seconds. With exponential backoff, a task that fails once will typically succeed on attempt 2 or 3, well within the verification email's 15-20 minute expiry window.
+</Callout>
+
+08
+
+## Visibility Timeout & Acknowledgements
+
+When a consumer picks up a task (dequeues it), the task doesn't get deleted immediately. Instead, it becomes **invisible** to other consumers for a configurable duration, the **visibility timeout**. This is the period the task is considered "in progress."
+
+<Diagram>
+<svg viewBox="0 0 680 180" xmlns="http://www.w3.org/2000/svg" width="640"><defs><marker id="c1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-ok-soft)"></path></marker><marker id="c2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-accent-soft)"></path></marker><marker id="c3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-warn-soft)"></path></marker></defs><rect x="80" y="80" width="520" height="20" rx="3" fill="var(--dg-inverse)" stroke="var(--dg-line-2)" stroke-width="1"></rect><rect x="80" y="80" width="120" height="20" rx="3" fill="var(--dg-info-tint)"></rect><text x="140" y="73" text-anchor="middle" fill="var(--dg-info-soft)" font-family="var(--font-diagram-mono)" font-size="9">WAITING IN QUEUE</text><rect x="200" y="80" width="200" height="20" fill="var(--dg-warn-tint)"></rect><text x="300" y="73" text-anchor="middle" fill="var(--dg-warn-soft)" font-family="var(--font-diagram-mono)" font-size="9">VISIBILITY TIMEOUT (in progress)</text><rect x="400" y="80" width="80" height="20" fill="var(--dg-ok-surface)" rx="0"></rect><text x="440" y="73" text-anchor="middle" fill="var(--dg-ok-soft)" font-family="var(--font-diagram-mono)" font-size="9">ACK -> done</text><rect x="400" y="110" width="80" height="20" fill="var(--dg-accent-surface)" rx="0"></rect><text x="440" y="145" text-anchor="middle" fill="var(--dg-accent-soft)" font-family="var(--font-diagram-mono)" font-size="9">no ACK -> re-visible</text><line x1="200" y1="60" x2="200" y2="78" stroke="var(--dg-warn-soft)" stroke-width="1.2" marker-end="url(#c3)"></line><text x="200" y="52" text-anchor="middle" fill="var(--dg-warn-soft)" font-family="var(--font-diagram-mono)" font-size="9">consumer dequeues</text><line x1="400" y1="60" x2="400" y2="78" stroke="var(--dg-ok-soft)" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#c1)"></line><line x1="600" y1="60" x2="600" y2="78" stroke="var(--dg-accent-soft)" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#c2)"></line><text x="600" y="52" text-anchor="middle" fill="var(--dg-accent-soft)" font-family="var(--font-diagram-mono)" font-size="9">timeout expires</text><rect x="540" y="80" width="120" height="20" fill="var(--dg-accent-tint)" rx="0"></rect><text x="600" y="110" text-anchor="middle" fill="var(--dg-accent-soft)" font-family="var(--font-diagram-mono)" font-size="9">-> available to other workers</text></svg>
+</Diagram>
+
+#### Why Does This Exist?
+
+Without visibility timeout, if a consumer crashes mid-task, the task would be permanently lost, it was already removed from the queue when the consumer picked it up. Visibility timeout ensures that if the worker _doesn't acknowledge_ within the window (it crashed, hung, or the external service timed out), the task becomes visible again and another worker can pick it up. **Tasks are never lost.**
+
+ACK (success)
+
+Consumer sends acknowledgement -> queue permanently deletes the task.
+
+NACK (failure)
+
+Consumer reports failure -> queue schedules retry (with backoff).
+
+No signal
+
+Consumer crashed or hung -> visibility timeout expires -> task re-enqueued for another worker.
+
+09
+
+## Types of Background Tasks
+
+One-Off Tasks
+
+Triggered once by a specific event. Send verification email, welcome email, password-reset link, in-app notification. Most common type.
+
+Recurring Tasks
+
+Scheduled at fixed intervals. Weekly reports, daily digest emails, DB cleanup jobs, orphan session purging. Implemented via cron-like schedulers.
+
+Chain Tasks
+
+Parent-child dependencies. Task B can only run after Task A succeeds. Tasks at the same level can run in parallel. Classic: video upload pipeline.
+
+Batch Tasks
+
+One trigger fans out into many parallel tasks. Delete account spawns sub-tasks per resource type. Send 10k reports at midnight.
+
+### Chain Tasks: Video Upload Example
+
+<Diagram>
+<svg viewBox="0 0 660 260" xmlns="http://www.w3.org/2000/svg" width="640"><defs><marker id="d1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-warn-soft)"></path></marker><marker id="d2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-info-soft)"></path></marker><marker id="d3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-plum)"></path></marker></defs><rect x="240" y="10" width="160" height="44" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-warn-soft)" stroke-width="1.5"></rect><text x="320" y="30" text-anchor="middle" fill="var(--dg-on-inverse-warn)" font-family="var(--font-diagram-mono)" font-size="11">VIDEO UPLOAD</text><text x="320" y="46" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">stored to S3</text><rect x="240" y="90" width="160" height="44" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-warn-soft)" stroke-width="1.5"></rect><text x="320" y="110" text-anchor="middle" fill="var(--dg-on-inverse-warn)" font-family="var(--font-diagram-mono)" font-size="11">VIDEO ENCODE</text><text x="320" y="126" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">360p/720p/1080p</text><line x1="320" y1="54" x2="320" y2="88" stroke="var(--dg-warn-soft)" stroke-width="1.5" marker-end="url(#d1)"></line><text x="340" y="74" fill="var(--dg-ink-2)" font-family="var(--font-diagram-mono)" font-size="9">depends on</text><rect x="80" y="180" width="160" height="44" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-info-soft)" stroke-width="1.5"></rect><text x="160" y="200" text-anchor="middle" fill="var(--dg-on-inverse-info)" font-family="var(--font-diagram-mono)" font-size="11">THUMBNAIL GEN</text><text x="160" y="216" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">from encoded video</text><rect x="390" y="180" width="175" height="44" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-plum)" stroke-width="1.5"></rect><text x="477" y="200" text-anchor="middle" fill="var(--dg-on-inverse-accent)" font-family="var(--font-diagram-mono)" font-size="11">TRANSCRIPTION</text><text x="477" y="216" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">audio -> subtitles</text><line x1="280" y1="134" x2="190" y2="178" stroke="var(--dg-info-soft)" stroke-width="1.2" marker-end="url(#d2)"></line><line x1="360" y1="134" x2="450" y2="178" stroke="var(--dg-plum)" stroke-width="1.2" marker-end="url(#d3)"></line><text x="200" y="165" fill="var(--dg-info-soft)" font-family="var(--font-diagram-mono)" font-size="8">parallel</text><text x="380" y="165" fill="var(--dg-plum)" font-family="var(--font-diagram-mono)" font-size="8">parallel</text><text x="320" y="250" text-anchor="middle" fill="var(--dg-ink-3)" font-family="var(--font-diagram-mono)" font-size="9">thumbnail-gen and transcription both depend on encode, but not on each other</text></svg>
+</Diagram>
+
+10
+
+## Real-World Use Cases
+
+| Use Case                         | Task Type        | Why Background?                                                                   |
+| -------------------------------- | ---------------- | --------------------------------------------------------------------------------- |
+| **Email verification / welcome** | One-off          | Depends on external email provider. Failure must not break signup.                |
+| **Image/video resizing**         | Chain            | CPU-intensive. Would block the request thread for seconds.                        |
+| **Weekly/monthly reports**       | Recurring (cron) | Must run at a specific time, not triggered by a user request.                     |
+| **Push notifications**           | Batch / One-off  | Calls Apple APNs / Google FCM, external services. Can fail, need retries.         |
+| **Account deletion**             | Batch + Chain    | Traverses entire user graph (projects, assets, sessions), too slow for a request. |
+| **Orphan session cleanup**       | Recurring        | Maintenance job, run monthly to free DB storage.                                  |
+| **PDF report generation**        | One-off / Batch  | Constructing large HTML->PDF is CPU/memory-intensive.                             |
+
+### Push Notifications: How It Actually Works
+
+Your backend **cannot** send a push notification directly to a phone. Here's the full flow:
+
+1. User installs the app -> the OS generates a unique device token (Apple APNs token / Google FCM token).
+2. App sends that token to your backend on first launch, you store it per-user in your DB.
+3. When you want to notify the user: enqueue a "send push notification" task with the user's device token + message payload.
+4. Worker dequeues -> calls Apple APNs or Google FCM API with the token and payload.
+5. Apple/Google deliver the notification to the device via the OS-level push channel.
+
+<Callout type="info" title="Why background?">
+Same reason as email, depends on Apple/Google external services. Rate-limited. Needs retries. Potentially millions of tokens per event (sports app: goal scored -> notify all fans).
+</Callout>
+
+11
+
+## Code Examples: BullMQ & Redis in Node.js
+
+[BullMQ](https://docs.bullmq.io/) is the gold standard for distributed task queues in the Node.js ecosystem, backed by Redis.
+
+### Producer & Express API Integration
+
+```js title="queue.js / Task definition and producer in Express with BullMQ"
+import express from 'express';
+import { Queue } from 'bullmq';
+
+const connection = { host: 'localhost', port: 6379 };
+
+// Create a named queue
+export const emailQueue = new Queue('emails', {
+  connection,
+  defaultJobOptions: {
+    attempts: 5, // retry up to 5 times
+    backoff: {
+      type: 'exponential', // 1s, 2s, 4s, 8s, 16s...
+      delay: 1000,
+    },
+    removeOnComplete: true, // auto-clean successful jobs
+    removeOnFail: false,    // retain failed jobs for inspection (dead letter)
+  },
+});
+
+const app = express();
+app.use(express.json());
+
+// Express API handler: Enqueues job and returns instantly (under 10ms)
+app.post('/api/signup', async (req, res) => {
+  const { email, name } = req.body;
+
+  // 1. Create user in database ...
+  const userId = 'usr_01J2K';
+  const token = 'eyJhbGci...';
+
+  // 2. Enqueue verification email job (does NOT wait for SMTP delivery)
+  await emailQueue.add('sendVerification', {
+    userId,
+    email,
+    token,
+  });
+
+  // 3. Return 201 Created immediately
+  return res.status(201).json({ message: 'Account created. Check your email for verification.' });
+});
+```
+
+### Consumer Worker with Concurrency and Retries
+
+```js title="worker.js / BullMQ worker process with concurrency and event handling"
+import { Worker } from 'bullmq';
+
+const connection = { host: 'localhost', port: 6379 };
+
+// External email service simulation
+async function sendVerificationEmail({ email, token }) {
+  // e.g. await resend.emails.send({ from: 'noreply@myapp.com', to: email, ... });
+  console.log(`Sending verification email to ${email}`);
+}
+
+// Instantiate worker listening to the 'emails' queue
+export const emailWorker = new Worker(
+  'emails',
+  async (job) => {
+    console.log(`Processing job ${job.id} (attempt ${job.attemptsMade + 1})`);
+
+    if (job.name === 'sendVerification') {
+      const { email, token } = job.data;
+      await sendVerificationEmail({ email, token });
+    }
+
+    return { deliveredAt: new Date().toISOString() }; // return value stored in job result
+  },
+  {
+    connection,
+    concurrency: 10, // process up to 10 jobs concurrently
+  }
+);
+
+// Worker Lifecycle Events
+emailWorker.on('completed', (job, result) => {
+  console.log(`Job ${job.id} completed successfully!`, result);
+});
+
+emailWorker.on('failed', (job, err) => {
+  console.error(`Job ${job.id} failed after ${job.attemptsMade} attempts: ${err.message}`);
+});
+```
+
+### Recurring Tasks with BullMQ (Repeatable Cron Jobs)
+
+```js title="scheduler.js / BullMQ repeatable cron jobs"
+import { Queue } from 'bullmq';
+
+const connection = { host: 'localhost', port: 6379 };
+const reportsQueue = new Queue('reports', { connection });
+
+// Schedule recurring tasks using standard 5-part cron syntax
+export async function setupScheduledJobs() {
+  // 1. Send weekly report every Sunday at midnight
+  await reportsQueue.add(
+    'generateWeeklyReport',
+    { reportType: 'weekly_summary' },
+    {
+      repeat: {
+        pattern: '0 0 * * 0',
+      },
+    }
+  );
+
+  // 2. Clean up orphaned sessions on the 1st of every month at 03:00 AM
+  await reportsQueue.add(
+    'cleanupSessions',
+    {},
+    {
+      repeat: {
+        pattern: '0 3 1 * *',
+      },
+    }
+  );
+
+  console.log('Repeatable cron jobs registered with BullMQ.');
+}
+```
+
+12
+
+## Design Considerations at Scale
+
+When your platform grows to thousands of concurrent users, the naive task-queue setup that worked in development starts to crack. These are the areas you must engineer carefully before you hit production scale.
+
+Horizontal scaling
+
+Design consumers to be **stateless**: all shared state lives in the database or cache, not in the process. This lets you spin up N replicas with zero config changes. More traffic -> add workers, not bigger servers.
+
+Ordered delivery
+
+Parallel consumers break FIFO ordering. If strict order matters (e.g. charge -> refund must happen in sequence), use SQS FIFO with a `MessageGroupId` or a single-consumer queue for that task type.
+
+Error categories
+
+Distinguish _transient_ errors (network timeout, 503 -> retry) from _permanent_ errors (invalid payload, 400 -> skip retry immediately, send to DLQ). Retrying permanent errors wastes resources and fills your queue.
+
+Backpressure
+
+If the queue grows faster than workers consume, you have backpressure. Solutions: scale consumers horizontally, implement priority queues, or shed load with circuit breakers on the producer side.
+
+17
+
+## Idempotency Patterns in Depth
+
+**Idempotency** means that running a task once or 100 times produces identical side-effects. This is non-negotiable in any system that retries tasks, and all production task queues do. There are several concrete patterns to achieve it.
+
+### Pattern 1: Idempotency Keys
+
+Assign a unique key to each task when it is created (usually a UUID or a hash of the input). Before doing any work, the handler checks if that key has already been successfully processed. If yes, it returns early without re-doing the work.
+
+```js title="idempotent-task.js / Redis idempotency guard in Node.js"
+import { Redis } from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+
+export async function processVerificationEmailJob(job) {
+  const { userId, email, token } = job.data;
+  const idempotencyKey = `idem:verify_email:${userId}:${token}`;
+
+  // SET NX = set only if Not eXists; EX = 3600 second expiry
+  // Returns 'OK' if this is the FIRST execution, null if already processed
+  const acquired = await redis.set(idempotencyKey, 'processing', 'NX', 'EX', 3600);
+  if (!acquired) {
+    console.log(`Job ${job.id} already processed. Skipping.`);
+    return { status: 'already_sent' }; // Idempotent no-op
+  }
+
+  try {
+    await sendEmailViaProvider(email, token);
+    await redis.set(idempotencyKey, 'completed', 'EX', 86400); // keep record for 24h
+  } catch (err) {
+    // Delete key on failure so retries can re-execute cleanly
+    await redis.del(idempotencyKey);
+    throw err;
+  }
+}
+```
+
+### Pattern 2: Database Transaction + Upsert
+
+For tasks that write to a database, use **upserts** (INSERT ... ON CONFLICT DO NOTHING / DO UPDATE) instead of plain INSERTs. This way, retrying the task simply tries to insert again and silently skips the duplicate.
+
+```sql
+-- PostgreSQL, Idempotent email log via upsert
+-- If the verification_emails row already exists for this token, do nothing
+INSERT INTO verification_emails (token, user_id, sent_at, provider_msg_id)
+VALUES ($1, $2, NOW(), $3)
+ON CONFLICT (token) DO NOTHING;
+
+-- For updates: ON CONFLICT DO UPDATE
+INSERT INTO user_status (user_id, email_verified, updated_at)
+VALUES ($1, true, NOW())
+ON CONFLICT (user_id) DO UPDATE
+  SET email_verified = EXCLUDED.email_verified,
+      updated_at = EXCLUDED.updated_at;
+SQL
+```
+
+### Pattern 3: Full Transaction Rollback (for complex tasks)
+
+For multi-step tasks (like account deletion) that touch many tables, wrap the entire task in a database transaction. If any step fails, the transaction rolls back completely, leaving the database in a clean state for the next retry attempt.
+
+```js title="multi-step-rollback.js / Atomic multi-step worker task in Node.js"
+export async function handleDeleteAccountJob(job, db) {
+  const { userId } = job.data;
+
+  // Idempotency check: verify if user still exists
+  const user = await db.query('SELECT id FROM users WHERE id = $1', [userId]);
+  if (user.rows.length === 0) {
+    return { status: 'already_deleted' }; // User already cleaned up on previous attempt
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN'); // Start transaction boundary
+
+    // Step 1: Delete projects
+    await client.query('DELETE FROM projects WHERE owner_id = $1', [userId]);
+    // Step 2: Delete sessions
+    await client.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
+    // Step 3: Delete user record
+    await client.query('DELETE FROM users WHERE id = $1', [userId]);
+
+    await client.query('COMMIT'); // Atomic commit
+    return { status: 'deleted', userId };
+  } catch (err) {
+    await client.query('ROLLBACK'); // Roll back on ANY failure: state remains clean for retry
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+```
+
+### Pattern 4: Exactly-Once via SQS FIFO Deduplication
+
+SQS FIFO queues accept a `MessageDeduplicationId`. Any message with the same ID sent within a 5-minute window is silently dropped. This is broker-level idempotency, the handler never even sees the duplicate.
+
+```js title="sqs-fifo.js / SQS FIFO deduplication in Node.js"
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+
+const sqs = new SQSClient({ region: 'us-east-1' });
+
+export async function sendOrderEvent(orderId, payload) {
+  const command = new SendMessageCommand({
+    QueueUrl: 'https://sqs.us-east-1.amazonaws.com/123/orders.fifo',
+    MessageBody: JSON.stringify(payload),
+    MessageGroupId: 'order-processing', // strict FIFO order guaranteed within this group
+    MessageDeduplicationId: orderId,     // duplicates within 5-min window are silently dropped
+  });
+
+  return sqs.send(command);
+}
+```
+
+Rule of thumb
+
+Always apply _at least one_ of these patterns. For most tasks: idempotency key in Redis (Pattern 1) is the simplest and cheapest. For DB-heavy tasks: upserts (Pattern 2) + transaction (Pattern 3). For SQS workloads: FIFO dedup ID (Pattern 4).
+
+18
+
+## Rate Limiting in Workers
+
+External APIs impose rate limits. If your workers send 500 emails per second and Resend's limit is 100/second, you'll get flooded with 429 errors, wasted retries, and degraded deliverability. You need to **throttle your workers** to stay within limits.
+
+### Two Core Algorithms
+
+Token Bucket
+
+A "bucket" fills with tokens at a fixed rate (e.g. 100 tokens/second). Each API call consumes one token. If the bucket is empty, the call waits. Allows bursts up to bucket capacity. Redis implementation: `INCR` + `EXPIRE`.
+
+Sliding Window
+
+Count requests in the last N seconds using a sliding time window. More accurate than token bucket for strict rate compliance. Redis implementation: sorted sets with timestamps as scores.
+
+### Token Bucket in Node.js (Redis-backed)
+
+```js title="token-bucket.js / Atomic token bucket limiter in Node.js"
+import { Redis } from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+
+const TOKEN_BUCKET_LUA = `
+  local key = KEYS[1]
+  local capacity = tonumber(ARGV[1])
+  local refillRate = tonumber(ARGV[2])
+  local now = tonumber(ARGV[3])
+
+  local bucket = redis.call('HMGET', key, 'tokens', 'lastRefill')
+  local tokens = tonumber(bucket[1]) or capacity
+  local lastRefill = tonumber(bucket[2]) or now
+
+  local elapsed = now - lastRefill
+  tokens = math.min(capacity, tokens + elapsed * refillRate)
+
+  if tokens >= 1 then
+    tokens = tokens - 1
+    redis.call('HMSET', key, 'tokens', tokens, 'lastRefill', now)
+    redis.call('EXPIRE', key, 3600)
+    return 1
+  end
+  return 0
+`;
+
+export async function acquireToken(limiterKey, capacity = 100, refillRate = 10) {
+  const now = Math.floor(Date.now() / 1000);
+  const result = await redis.eval(TOKEN_BUCKET_LUA, 1, limiterKey, capacity, refillRate, now);
+  return result === 1;
+}
+```
+
+### Sliding Window Rate Limiter in Node.js
+
+```js title="sliding-window.js / Redis sorted set sliding window in Node.js"
+import { Redis } from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+
+export async function isAllowedSlidingWindow(key, limit = 50, windowMs = 60000) {
+  const now = Date.now();
+  const windowStart = now - windowMs;
+
+  const results = await redis.multi()
+    .zremrangebyscore(key, 0, windowStart) // remove entries outside window
+    .zcard(key)                           // count requests in active window
+    .zadd(key, now, `${now}-${Math.random()}`) // add current request
+    .pexpire(key, windowMs * 2)
+    .exec();
+
+  const currentCount = results[1][1];
+  return currentCount < limit;
+}
+```
+
+<Callout type="info" title="Asynq Built-In Rate Limiting">
+Asynq has a native rate limiter interface. Implement `asynq.RateLimiter` and pass it to `asynq.NewServer`, the server will automatically pause worker polling when the limit is hit, without needing manual retry logic in your handler.
+</Callout>
+
+19
+
+## Full Monitoring Setup: Prometheus + Grafana
+
+Background tasks fail silently unless you've built observability into the system. The standard production stack is: **Prometheus** (metrics collection & storage) + **Grafana** (dashboard & alerting). Here's the complete setup.
+
+### Architecture Overview
+
+<Diagram>
+<svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" width="640"><defs><marker id="m1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-warn-soft)"></path></marker><marker id="m2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-info-soft)"></path></marker><marker id="m3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="var(--dg-ok-soft)"></path></marker></defs><rect x="10" y="70" width="130" height="55" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-warn-soft)" stroke-width="1.2"></rect><text x="75" y="93" text-anchor="middle" fill="var(--dg-on-inverse-warn)" font-family="var(--font-diagram-mono)" font-size="11">WORKERS</text><text x="75" y="111" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">/metrics endpoint</text><rect x="10" y="145" width="130" height="40" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-warn-soft)" stroke-width="1.2"></rect><text x="75" y="162" text-anchor="middle" fill="var(--dg-on-inverse-warn)" font-family="var(--font-diagram-mono)" font-size="11">API SERVER</text><text x="75" y="177" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">/metrics endpoint</text><rect x="230" y="80" width="130" height="55" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-info-soft)" stroke-width="1.2"></rect><text x="295" y="103" text-anchor="middle" fill="var(--dg-on-inverse-info)" font-family="var(--font-diagram-mono)" font-size="11">PROMETHEUS</text><text x="295" y="121" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">scrapes every 15s</text><rect x="450" y="60" width="100" height="40" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-ok-soft)" stroke-width="1.2"></rect><text x="500" y="85" text-anchor="middle" fill="var(--dg-on-inverse-ok)" font-family="var(--font-diagram-mono)" font-size="11">GRAFANA</text><rect x="450" y="120" width="100" height="40" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-accent-soft)" stroke-width="1.2"></rect><text x="500" y="138" text-anchor="middle" fill="var(--dg-on-inverse-accent)" font-family="var(--font-diagram-mono)" font-size="11">ALERTMANAGER</text><text x="500" y="153" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">Slack / PagerDuty</text><rect x="590" y="80" width="80" height="40" rx="5" fill="var(--dg-inverse)" stroke="var(--dg-plum)" stroke-width="1.2"></rect><text x="630" y="98" text-anchor="middle" fill="var(--dg-on-inverse-accent)" font-family="var(--font-diagram-mono)" font-size="10">REDIS</text><text x="630" y="112" text-anchor="middle" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="9">exporter</text><line x1="142" y1="92" x2="228" y2="100" stroke="var(--dg-warn-soft)" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#m1)"></line><line x1="142" y1="162" x2="228" y2="110" stroke="var(--dg-warn-soft)" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#m1)"></line><text x="185" y="88" fill="var(--dg-ink-2)" font-family="var(--font-diagram-mono)" font-size="8">scrape</text><line x1="362" y1="96" x2="448" y2="76" stroke="var(--dg-ok-soft)" stroke-width="1" marker-end="url(#m3)"></line><line x1="362" y1="110" x2="448" y2="132" stroke="var(--dg-accent-soft)" stroke-width="1" marker-end="url(#m2)"></line><line x1="590" y1="98" x2="362" y2="100" stroke="var(--dg-plum)" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#m1)"></line><text x="475" y="92" fill="var(--dg-on-inverse-2)" font-family="var(--font-diagram-mono)" font-size="8">scrape</text></svg>
+</Diagram>
+
+### Step 1: Instrument Your Workers
+
+Every worker process can expose a `/metrics` HTTP endpoint in Prometheus format using the `prom-client` library:
+
+```js title="metrics.js / Prometheus metrics instrumentation in Node.js"
+import express from 'express';
+import client from 'prom-client';
+
+const collectDefaultMetrics = client.collectDefaultMetrics;
+collectDefaultMetrics(); // collects memory, CPU, event-loop lag
+
+export const jobsProcessedTotal = new client.Counter({
+  name: 'task_queue_jobs_processed_total',
+  help: 'Total number of background jobs processed',
+  labelNames: ['queue', 'status'], // status: 'success' | 'failure'
+});
+
+export const jobDurationSeconds = new client.Histogram({
+  name: 'task_queue_job_duration_seconds',
+  help: 'Duration of background job processing in seconds',
+  labelNames: ['queue'],
+  buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60],
+});
+
+// Standalone metrics server for Prometheus scraping
+export function startMetricsServer(port = 9090) {
+  const app = express();
+  app.get('/metrics', async (req, res) => {
+    res.set('Content-Type', client.register.contentType);
+    res.send(await client.register.metrics());
+  });
+  app.listen(port, () => console.log(`Metrics listening on port ${port}`));
+}
+```
+
+### Step 2: Prometheus Configuration
+
+```yaml
+# prometheus.yml, Scrape config
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alert_rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: "celery_workers"
+    static_configs:
+      - targets:
+          - "worker-1:9090"
+          - "worker-2:9090"
+          - "worker-3:9090"
+
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis-exporter:9121"]  # oliver006/redis_exporter
+
+  - job_name: "api_server"
+    static_configs:
+      - targets: ["api:8080"]
+YAML
+```
+
+### Step 3: Alert Rules
+
+```text
+# alert_rules.yml, Fire alerts when things go wrong
+groups:
+  - name: task_queue_alerts
+    rules:
+
+      # Alert if queue depth stays high for 5 minutes
+      - alert: HighQueueDepth
+        expr: worker_queue_depth{queue_name="email"} > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Email queue backed up ({{ $value }} tasks)"
+          description: "Queue depth has been above 1000 for 5+ minutes. Scale workers."
+
+      # Alert if failure rate > 10% over last 5 minutes
+      - alert: HighTaskFailureRate
+        expr: |
+          rate(worker_tasks_total{status="failure"}[5m])
+          / rate(worker_tasks_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Task failure rate above 10%"
+
+      # Alert if a worker process goes down (no scrape for 1 min)
+      - alert: WorkerDown
+        expr: up{job="celery_workers"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Worker {{ $labels.instance }} is down"
+YAML
+```
+
+### Step 4: Key Grafana Panels to Build
+
+| Panel                 | Query (PromQL)                                                                        | Alert Threshold                        |
+| --------------------- | ------------------------------------------------------------------------------------- | -------------------------------------- |
+| Queue Depth (gauge)   | `worker_queue_depth{queue_name="email"}`                                              | > 1000 -> warn; > 5000 -> critical     |
+| Task Success Rate (%) | `rate(worker_tasks_total{status="success"}[5m]) / rate(worker_tasks_total[5m]) * 100` | &lt; 95% -> warn; &lt; 90% -> critical       |
+| p95 Task Latency      | `histogram_quantile(0.95, rate(worker_task_duration_seconds_bucket[5m]))`             | > 30s -> warn                          |
+| Retry Rate            | `rate(worker_task_retries_total[5m])`                                                 | Sudden spike -> external service issue |
+| Worker Count (active) | `count(up{job="celery_workers"} == 1)`                                                | &lt; min\_workers -> critical             |
+| Redis Memory Usage    | `redis_memory_used_bytes / redis_memory_max_bytes * 100`                              | > 80% -> warn                          |
+
+<Callout type="info" title="Redis Exporter">
+Run [oliver006/redis\_exporter](https://github.com/oliver006/redis_exporter) as a sidecar. It exposes 100+ Redis metrics to Prometheus, queue lengths, memory, connected clients, keyspace hits/misses, zero code required.
+</Callout>
+
+13
+
+## Best Practices
+
+### 1. Keep Tasks Small and Focused
+
+A single task should do **one thing**. Don't bundle email sending + DB cleanup + analytics reporting into a single task. If one step fails, you retry the whole thing. Small tasks = precise retries, easier debugging, better scalability.
+
+If multiple things depend on each other, use **chain tasks** (parent-child). If they're independent, run them in parallel.
+
+### 2. Avoid Long-Running Tasks
+
+If a task takes minutes to run, break it into smaller chunks. Long tasks consume worker threads, are harder to retry correctly, and are prone to visibility timeout expiry. A task that takes 10 minutes -> 10 tasks that each take 1 minute.
+
+### 3. Robust Error Handling & Logging
+
+Unlike a web request where you can return a 500 and the client sees it, **background tasks fail silently** unless you've built observability in. Every handler must:
+
+- Catch all exceptions, don't let unhandled panics/exceptions kill the worker silently.
+- Log the task ID, user ID, error type, and full stack trace on failure.
+- Distinguish transient vs permanent errors, use `SkipRetry` (Asynq) or `raises=(SkipRetry,)` (Celery) for unrecoverable errors.
+- Send critical failures to an alerting channel (Slack, PagerDuty).
+
+### 4. Monitor Queue Length & Worker Health
+
+Set up **alerting thresholds**: if queue depth > 10,000 -> trigger auto-scaling or alert engineers. If a worker pod restarts more than 3 times in 5 minutes -> alert. Use Grafana dashboards backed by Prometheus (or CloudWatch for SQS).
+
+### 5. Use Dead Letter Queues
+
+Never let tasks disappear silently. Configure a DLQ so that tasks exhausting all retries land somewhere inspectable. Regularly audit the DLQ, recurring failures there indicate a systemic bug.
+
+<Callout type="info" title="Summary Checklist">
+Task is idempotent   Handler has try/catch   Errors are logged with context   Prometheus metrics emitted   DLQ configured   Exponential backoff enabled   Visibility timeout set appropriately   Workers are stateless (horizontally scalable)
+</Callout>
+
+14
+
+## Framework Comparison
+
+| Framework    | Runtime          | Broker          | Retries             | Scheduling         | Notes                                                                    |
+| ------------ | ---------------- | --------------- | ------------------- | ------------------ | ------------------------------------------------------------------------ |
+| **BullMQ**   | Node.js (JS/TS)  | Redis           | Built-in            | Repeatable jobs    | De facto Node.js standard. High throughput, Bull Board UI dashboard.    |
+| **Sidekiq**  | Ruby             | Redis           | Built-in            | Sidekiq-Cron       | High throughput Ruby worker framework.                                  |
+| **Temporal** | Polyglot (JS/TS) | Temporal Cluster| Durable workflows   | Built-in           | Full workflow orchestration engine with durable state persistence.       |
+
+## Production Case Study: Decoupling Bursty Webhooks with BullMQ in MagnusCI
+
+To see BullMQ in action under real infrastructure pressure, consider **MagnusCI** (`ci-cd-engine`), an automated CI/CD platform built by Aman Kashyap.
+
+### The Problem: The Webhook Stampede
+When developers push commits or open pull requests, GitHub immediately fires HTTP POST webhook requests to the MagnusCI API gateway. In an active organization, a rush of 30 commits across 5 repositories can arrive within seconds.
+
+If the Express API attempted to spawn Docker containers, clone repositories, and run build scripts **inline within the HTTP request**:
+1. The host would instantly run out of memory (OOM) attempting to launch 30 concurrent compiler containers.
+2. The HTTP requests would exceed GitHub's 10-second webhook timeout, leading GitHub to flag the webhook as failed.
+3. If a container crashed the Node.js process, in-flight builds would vanish with zero retry trail.
+
+### The MagnusCI Solution: Priority Queues & Concurrency Guards
+
+MagnusCI strictly decouples **webhook ingestion** from **pipeline execution** using BullMQ and Redis:
+
+```
+[GitHub Webhook POST]
+         │
+         ▼
+┌───────────────────────────┐
+│ Express API Gateway       │ ── (HMAC SHA-256 validation)
+└───────────────────────────┘
+         │
+         ▼ (queue.add with Priority)
+┌───────────────────────────┐
+│ Redis 7 (BullMQ Queue)    │ ── (Priority 1: main branch, Priority 2: feature PRs)
+└───────────────────────────┘
+         │
+         ▼ (concurrency: 3)
+┌───────────────────────────┐
+│ Dedicated Worker Daemon   │ ── (Pulls jobs, allocates Docker sandboxes)
+└───────────────────────────┘
+```
+
+#### 1. Ingestion: Rapid Producer Response (under 20ms)
+The API gateway verifies the cryptographic signature, generates an idempotent build record in PostgreSQL, enqueues the job into BullMQ, and immediately responds with `202 Accepted`:
+
+```javascript
+// MagnusCI API Gateway: Enqueuing build with branch-based priority
+import { Queue } from 'bullmq';
+import IORedis from 'ioredis';
+
+const connection = new IORedis({ host: process.env.REDIS_HOST, port: 6379 });
+const pipelineQueue = new Queue('ci-pipeline-queue', { connection });
+
+export async function handleWebhook(req, res) {
+  const { repository, ref, after: commitSha } = req.body;
+  const isMainBranch = ref === 'refs/heads/main';
+
+  // Enqueue job with priority (lower number = higher priority in BullMQ)
+  const job = await pipelineQueue.add(
+    'execute-build',
+    {
+      repoUrl: repository.clone_url,
+      branch: ref.replace('refs/heads/', ''),
+      commitSha,
+      buildId: req.buildId,
+    },
+    {
+      priority: isMainBranch ? 1 : 2, // main branch builds jump ahead of PRs
+      attempts: 2,                     // automatic retry on transient failure
+      backoff: { type: 'exponential', delay: 5000 },
+      removeOnComplete: 100,           // retain last 100 for audit
+      removeOnFail: 500,               // retain failures for inspection
+    }
+  );
+
+  return res.status(202).json({ status: 'queued', jobId: job.id });
+}
+```
+
+#### 2. Execution: Worker Daemon with Controlled Concurrency
+In a separate process (`src/worker.js`), MagnusCI initializes a BullMQ `Worker` configured with strict concurrency limits to match the host machine's hardware capacity:
+
+```javascript
+// MagnusCI Worker Daemon: Enforcing strict concurrency and heartbeat locks
+import { Worker } from 'bullmq';
+import { executePipelineDAG } from './dag.js';
+
+const worker = new Worker(
+  'ci-pipeline-queue',
+  async (job) => {
+    const { buildId, repoUrl, commitSha } = job.data;
+    console.log(`[Worker] Starting build ${buildId} (Job: ${job.id})`);
+
+    // Reports progress back to Redis without blocking the execution
+    await job.updateProgress(10);
+
+    // Executes topological DAG pipeline stages inside isolated Docker containers
+    const result = await executePipelineDAG(job);
+    return result;
+  },
+  {
+    connection,
+    concurrency: 3,        // Exactly 3 parallel containers maximum on this host
+    lockDuration: 60000,   // 60s lock renewal: worker heartbeats Redis
+    stalledInterval: 30000,// Automatically reclaim orphaned jobs if worker crashes
+  }
+);
+```
+
+#### 3. Handling Crashes via Stalled-Job Auto-Reclaim
+If a user build script triggers an OOM killer that terminates the worker process, the BullMQ lock on the job naturally expires in Redis after 60 seconds (`lockDuration`). The next available worker daemon detects the stalled job via `stalledInterval`, moves it back to `waiting`, and re-executes the build cleanly — guaranteeing **zero dropped jobs**.
+
+<Callout type="ok" title="The Systems Lesson">
+Task queues are not just for asynchronous emails; they are the primary architectural tool for backpressure and load leveling. By placing BullMQ between high-velocity webhooks and expensive Docker container execution, MagnusCI ensures that bursty traffic never exhausts system memory or causes dropped requests.
+</Callout>
+
+---
+
+<Callout type="info" title="Recap">
+Background tasks are essential for any production backend. They decouple your API's reliability from external services, prevent timeout-induced failures, enable automatic retries, and allow you to horizontally scale processing independently of your API servers. The patterns here, producer/consumer, exponential backoff, visibility timeout, idempotency, monitoring, apply regardless of language or framework. Master these, and you're building production-grade backends.
+</Callout>
+
+20
+
+## Temporal & Workflow Orchestration
+
+Standard task queues (like BullMQ) are great for _independent tasks_, fire and forget, retry on failure. But when you have **long-running, multi-step workflows** with complex dependencies, conditional branching, human approval steps, or compensation logic (saga pattern), you need something more powerful: a **workflow orchestration engine**.
+
+<Callout type="info" title="The Core Problem Temporal Solves">
+Imagine a payment workflow: charge card -> reserve inventory -> send confirmation email -> notify warehouse -> update loyalty points. Each step can fail independently. If step 4 fails, do you refund step 1? How do you resume from step 4 after a server crash? How do you wait for a human to approve step 3 before continuing? This is where task queues break down and workflow engines shine.
+</Callout>
+
+### Task Queue vs Workflow Engine
+
+| Capability                     | Task Queue (BullMQ)                          | Temporal                                      |
+| ------------------------------ | -------------------------------------------- | --------------------------------------------- |
+| **Individual task retries**    | Built-in                                     | Built-in                                      |
+| **Multi-step workflows**       | Manual, you chain tasks yourself             | Native, workflows are first-class             |
+| **Workflow state persistence** | You manage it (DB records, flags)            | Automatic, entire execution history persisted |
+| **Crash recovery**             | Retry from start of task                     | Resume from exact step where crash occurred   |
+| **Compensation / rollback**    | Manual code                                  | Native saga pattern support                   |
+| **Long-running (days/months)** | Hard, visibility timeouts, connection limits | Native, timers can fire after months          |
+| **Human-in-the-loop**          | Very difficult                               | Native signals & queries                      |
+| **Operational complexity**     | Low                                          | High, requires Temporal server cluster        |
+| **Languages**                  | JavaScript / Node.js                         | TypeScript, JavaScript, Polyglot              |
+
+### Core Temporal Concepts
+
+Workflow
+
+A durable function that orchestrates the entire business process. Written as regular code but Temporal serializes every step. If the server crashes, execution resumes exactly where it left off.
+
+Activity
+
+An individual unit of work, equivalent to a Celery task. Has its own retry policy, timeout, and heartbeat. Activities interact with the outside world (DB, external APIs).
+
+Worker
+
+A process that polls the Temporal server for workflow/activity tasks and executes them. Same concept as Celery workers.
+
+Signal
+
+An external event sent into a running workflow. E.g. "human approved payment" -> workflow resumes. Enables human-in-the-loop patterns.
+
+Query
+
+Read the current state of a running workflow without affecting it. E.g. "what step is this order on?"
+
+Event History
+
+Temporal persists every single event in a workflow's lifetime. This is how it achieves crash recovery, on restart it replays the history to restore state.
+
+### Example: Video Processing Workflow with Temporal (Node.js / TypeScript)
+
+The same video processing pipeline implemented using the Temporal TypeScript/Node.js SDK:
+
+```ts title="video-workflow.ts / Durable workflow with Temporal TypeScript/Node.js SDK"
+import { proxyActivities } from '@temporalio/workflow';
+import type * as activities from './activities';
+
+// Configure activities with retry and timeout policies
+const { encodeVideo, generateThumbnails, generateTranscription, processThumbnailImages, notifyUserVideoReady } =
+  proxyActivities<typeof activities>({
+    startToCloseTimeout: '10 minutes',
+    retry: {
+      maximumAttempts: 3,
+      initialInterval: '1 minute',
+      backoffCoefficient: 2,
+    },
+  });
+
+// Temporal persists each step; server crash = resume exactly at current step
+export async function videoProcessingWorkflow(videoId: string): Promise<void> {
+  // Step 1: Encode video
+  const encodedPath = await encodeVideo(videoId);
+
+  // Step 2 & 3: Run thumbnail generation and transcription in parallel
+  await Promise.all([
+    generateThumbnails(encodedPath),
+    generateTranscription(encodedPath),
+  ]);
+
+  // Step 4: Process thumbnails
+  await processThumbnailImages(videoId);
+
+  // Step 5: Notify user
+  await notifyUserVideoReady(videoId);
+}
+```
+
+### Example: Human-in-the-Loop with Signals
+
+```ts title="payment-approval.ts / Human-in-the-loop workflow with Temporal signals"
+import { defineSignal, setHandler, condition, sleep } from '@temporalio/workflow';
+import { proxyActivities } from '@temporalio/workflow';
+import type * as activities from './activities';
+
+const { preparePayment, finalizePayment, refundPayment } = proxyActivities<typeof activities>({
+  startToCloseTimeout: '1 minute',
+});
+
+export const approvalSignal = defineSignal<[boolean]>('approvalSignal');
+
+export async function paymentApprovalWorkflow(orderId: string): Promise<void> {
+  let isApproved: boolean | null = null;
+  setHandler(approvalSignal, (approved: boolean) => {
+    isApproved = approved;
+  });
+
+  // Step 1: Prepare payment
+  await preparePayment(orderId);
+
+  // Step 2: Wait up to 24 hours for human approval signal (zero CPU consumed while waiting)
+  const receivedSignal = await condition(() => isApproved !== null, '24 hours');
+
+  if (!receivedSignal || !isApproved) {
+    // Timeout or rejected: trigger compensation activity (Saga pattern)
+    await refundPayment(orderId);
+    return;
+  }
+
+  // Approved: complete transaction
+  await finalizePayment(orderId);
+}
+```
+
+<Callout type="info" title="When to use Temporal vs a regular task queue">
+Use a regular task queue (Celery/Asynq/BullMQ) for **simple, independent tasks**: emails, notifications, image processing. Reach for Temporal when you have **multi-step business workflows** with compensation logic, long waiting periods, human approvals, or when you need full execution history for compliance/debugging. Temporal has higher operational overhead (you run a Temporal server cluster), so don't use it unless you need it.
+</Callout>
+
+Backend from First Principles / Chapter 10 / Task Queues. Code targets Node.js 20+ and BullMQ.
